@@ -99,7 +99,12 @@ const Calculator: React.FC = () => {
     setResult(emission);
 
     if (user) {
-      addCarbonRecord(emission, user.id);
+      // Store calculation data along with the emission
+      await addCarbonRecord(emission, {
+        ...formData,
+        calculatedAt: new Date().toISOString(),
+        calculationMethod: 'basic_formula_v1'
+      });
     }
 
     setLoading(false);

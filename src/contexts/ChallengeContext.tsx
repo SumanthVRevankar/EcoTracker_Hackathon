@@ -1,6 +1,7 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
 import { useAuth } from './AuthContext';
 import { useNotifications } from './NotificationContext';
+import { supabase, type UserChallenge } from '../lib/supabase';
 
 interface Challenge {
   id: string;
@@ -16,22 +17,13 @@ interface Challenge {
   carbonSaving: number; // kg CO2 saved
 }
 
-interface UserChallenge {
-  challengeId: string;
-  userId: number;
-  progress: number;
-  completed: boolean;
-  completedAt?: Date;
-  startedAt: Date;
-}
-
 interface ChallengeContextType {
   challenges: Challenge[];
   userChallenges: UserChallenge[];
   dailyStreak: number;
   totalPoints: number;
-  updateProgress: (challengeId: string, progress: number) => void;
-  completeChallenge: (challengeId: string) => void;
+  updateProgress: (challengeId: string, progress: number) => Promise<void>;
+  completeChallenge: (challengeId: string) => Promise<void>;
   getAvailableChallenges: () => Challenge[];
   getUserChallengeProgress: (challengeId: string) => UserChallenge | undefined;
 }
@@ -163,98 +155,209 @@ export const ChallengeProvider: React.FC<{ children: React.ReactNode }> = ({ chi
 
   useEffect(() => {
     if (user) {
-      // Initialize user challenges for today/this week
-      const today = new Date();
-      const startOfWeek = new Date(today.setDate(today.getDate() - today.getDay()));
-      
-      const existingChallenges = userChallenges.filter(uc => 
-        challenges.find(c => c.id === uc.challengeId)
-      );
-
-      const newChallenges = challenges
-        .filter(challenge => {
-          const hasExisting = existingChallenges.some(uc => uc.challengeId === challenge.id);
-          if (challenge.type === 'daily') {
-            // Check if user has today's challenge
-            const todayChallenge = existingChallenges.find(uc => 
-              uc.challengeId === challenge.id && 
-              new Date(uc.startedAt).toDateString() === new Date().toDateString()
-            );
-            return !todayChallenge;
-          } else {
-            // Check if user has this week's challenge
-            const weekChallenge = existingChallenges.find(uc => 
-              uc.challengeId === challenge.id && 
-              new Date(uc.startedAt) >= startOfWeek
-            );
-            return !weekChallenge;
-          }
-        })
-        .map(challenge => ({
-          challengeId: challenge.id,
-          userId: user.id,
-          progress: 0,
-          completed: false,
-          startedAt: new Date()
-        }));
-
-      if (newChallenges.length > 0) {
-        setUserChallenges(prev => [...prev, ...newChallenges]);
-      }
+      fetchUserChallenges();
+      calculateStats();
     }
-  }, [user, challenges]);
+  }, [user]);
 
-  const updateProgress = (challengeId: string, progress: number) => {
-    setUserChallenges(prev => 
-      prev.map(uc => 
-        uc.challengeId === challengeId 
-          ? { ...uc, progress: Math.min(progress, challenges.find(c => c.id === challengeId)?.target || 0) }
-          : uc
-      )
-    );
+  const fetchUserChallenges = async () => {
+    if (!user) return;
+
+    try {
+      const { data, error } = await supabase
+        .from('user_challenges')
+        .select('*')
+        .eq('user_id', user.id)
+        .order('started_at', { ascending: false });
+
+      if (error) {
+        console.error('Error fetching user challenges:', error);
+      } else {
+        setUserChallenges(data || []);
+      }
+    } catch (error) {
+      console.error('Error fetching user challenges:', error);
+    }
   };
 
-  const completeChallenge = (challengeId: string) => {
-    const challenge = challenges.find(c => c.id === challengeId);
-    if (!challenge) return;
+  const calculateStats = async () => {
+    if (!user) return;
 
-    setUserChallenges(prev => 
-      prev.map(uc => 
-        uc.challengeId === challengeId 
-          ? { ...uc, completed: true, completedAt: new Date(), progress: challenge.target }
-          : uc
-      )
-    );
+    try {
+      // Calculate total points from completed challenges
+      const { data: completedChallenges } = await supabase
+        .from('user_challenges')
+        .select('challenge_id')
+        .eq('user_id', user.id)
+        .eq('completed', true);
 
-    setTotalPoints(prev => prev + challenge.points);
+      let points = 0;
+      completedChallenges?.forEach((uc) => {
+        const challenge = challenges.find(c => c.id === uc.challenge_id);
+        if (challenge) {
+          points += challenge.points;
+        }
+      });
+      setTotalPoints(points);
 
-    // Update daily streak for daily challenges
-    if (challenge.type === 'daily') {
-      setDailyStreak(prev => prev + 1);
+      // Calculate daily streak (simplified - count consecutive days with completed daily challenges)
+      const { data: recentChallenges } = await supabase
+        .from('user_challenges')
+        .select('completed_at, challenge_id')
+        .eq('user_id', user.id)
+        .eq('completed', true)
+        .order('completed_at', { ascending: false })
+        .limit(30);
+
+      let streak = 0;
+      const today = new Date();
+      const dailyChallengeIds = challenges.filter(c => c.type === 'daily').map(c => c.id);
+
+      for (let i = 0; i < 30; i++) {
+        const checkDate = new Date(today);
+        checkDate.setDate(today.getDate() - i);
+        const dateStr = checkDate.toDateString();
+
+        const hasCompletedDaily = recentChallenges?.some(rc => {
+          const completedDate = new Date(rc.completed_at!).toDateString();
+          return completedDate === dateStr && dailyChallengeIds.includes(rc.challenge_id);
+        });
+
+        if (hasCompletedDaily) {
+          streak++;
+        } else {
+          break;
+        }
+      }
+      setDailyStreak(streak);
+    } catch (error) {
+      console.error('Error calculating stats:', error);
     }
+  };
 
-    // Send notifications
-    addNotification({
-      type: 'success',
-      title: 'Challenge Completed! 🎉',
-      message: `You completed "${challenge.title}" and earned ${challenge.points} points!`
-    });
+  const updateProgress = async (challengeId: string, progress: number) => {
+    if (!user) return;
 
-    sendPushNotification(
-      'Challenge Completed!',
-      `Great job! You completed "${challenge.title}" and saved ${challenge.carbonSaving}kg CO₂`
-    );
+    try {
+      const challenge = challenges.find(c => c.id === challengeId);
+      if (!challenge) return;
+
+      const clampedProgress = Math.min(progress, challenge.target);
+
+      // Check if user challenge exists
+      const existingChallenge = userChallenges.find(uc => uc.challenge_id === challengeId);
+
+      if (existingChallenge) {
+        // Update existing challenge
+        const { error } = await supabase
+          .from('user_challenges')
+          .update({ progress: clampedProgress })
+          .eq('id', existingChallenge.id);
+
+        if (error) {
+          console.error('Error updating challenge progress:', error);
+        } else {
+          setUserChallenges(prev => 
+            prev.map(uc => 
+              uc.id === existingChallenge.id 
+                ? { ...uc, progress: clampedProgress }
+                : uc
+            )
+          );
+        }
+      } else {
+        // Create new challenge
+        const { data, error } = await supabase
+          .from('user_challenges')
+          .insert([
+            {
+              user_id: user.id,
+              challenge_id: challengeId,
+              progress: clampedProgress,
+              completed: false,
+              started_at: new Date().toISOString(),
+            },
+          ])
+          .select()
+          .single();
+
+        if (error) {
+          console.error('Error creating challenge:', error);
+        } else {
+          setUserChallenges(prev => [...prev, data]);
+        }
+      }
+    } catch (error) {
+      console.error('Error updating progress:', error);
+    }
+  };
+
+  const completeChallenge = async (challengeId: string) => {
+    if (!user) return;
+
+    try {
+      const challenge = challenges.find(c => c.id === challengeId);
+      if (!challenge) return;
+
+      const existingChallenge = userChallenges.find(uc => uc.challenge_id === challengeId);
+
+      if (existingChallenge) {
+        // Update existing challenge
+        const { error } = await supabase
+          .from('user_challenges')
+          .update({ 
+            completed: true, 
+            completed_at: new Date().toISOString(),
+            progress: challenge.target 
+          })
+          .eq('id', existingChallenge.id);
+
+        if (error) {
+          console.error('Error completing challenge:', error);
+        } else {
+          setUserChallenges(prev => 
+            prev.map(uc => 
+              uc.id === existingChallenge.id 
+                ? { 
+                    ...uc, 
+                    completed: true, 
+                    completed_at: new Date().toISOString(),
+                    progress: challenge.target 
+                  }
+                : uc
+            )
+          );
+          
+          // Recalculate stats
+          calculateStats();
+
+          // Send notifications
+          addNotification({
+            type: 'success',
+            title: 'Challenge Completed! 🎉',
+            message: `You completed "${challenge.title}" and earned ${challenge.points} points!`
+          });
+
+          sendPushNotification(
+            'Challenge Completed!',
+            `Great job! You completed "${challenge.title}" and saved ${challenge.carbonSaving}kg CO₂`
+          );
+        }
+      }
+    } catch (error) {
+      console.error('Error completing challenge:', error);
+    }
   };
 
   const getAvailableChallenges = () => {
     return challenges.filter(challenge => {
-      const userChallenge = userChallenges.find(uc => uc.challengeId === challenge.id);
+      const userChallenge = userChallenges.find(uc => uc.challenge_id === challenge.id);
       return !userChallenge?.completed;
     });
   };
 
   const getUserChallengeProgress = (challengeId: string) => {
-    return userChallenges.find(uc => uc.challengeId === challengeId);
+    return userChallenges.find(uc => uc.challenge_id === challengeId);
   };
 
   const value = {

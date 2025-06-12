@@ -1,40 +1,37 @@
-import React, { createContext, useContext, useState } from 'react';
-
-interface CarbonRecord {
-  id: number;
-  date: Date;
-  emission: number;
-  userId: number;
-}
+import React, { createContext, useContext, useState, useEffect } from 'react';
+import { supabase, type CarbonRecord, type CommunityPost, type PostComment, type PostLike, type Profile } from '../lib/supabase';
+import { useAuth } from './AuthContext';
 
 interface Post {
-  id: number;
+  id: string;
   title: string;
   content: string;
   author: string;
-  authorId: number;
+  authorId: string;
   likes: number;
   comments: Comment[];
   createdAt: Date;
 }
 
 interface Comment {
-  id: number;
+  id: string;
   content: string;
   author: string;
-  authorId: number;
+  authorId: string;
   createdAt: Date;
 }
 
 interface DataContextType {
   carbonRecords: CarbonRecord[];
   posts: Post[];
-  addCarbonRecord: (emission: number, userId: number) => void;
-  addPost: (title: string, content: string, authorId: number, author: string) => void;
-  addComment: (postId: number, content: string, authorId: number, author: string) => void;
-  toggleLike: (postId: number) => void;
-  getUserRecords: (userId: number) => CarbonRecord[];
-  getLeaderboard: () => { username: string; city: string; avgEmission: number; rank: number }[];
+  addCarbonRecord: (emission: number, calculationData: any) => Promise<void>;
+  addPost: (title: string, content: string) => Promise<void>;
+  addComment: (postId: string, content: string) => Promise<void>;
+  toggleLike: (postId: string) => Promise<void>;
+  getUserRecords: (userId: string) => CarbonRecord[];
+  getLeaderboard: () => Promise<{ username: string; city: string; avgEmission: number; rank: number }[]>;
+  loading: boolean;
+  refreshPosts: () => Promise<void>;
 }
 
 const DataContext = createContext<DataContextType | undefined>(undefined);
@@ -48,120 +45,266 @@ export const useData = () => {
 };
 
 export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const [carbonRecords, setCarbonRecords] = useState<CarbonRecord[]>([
-    { id: 1, date: new Date(2024, 0, 15), emission: 2.5, userId: 1 },
-    { id: 2, date: new Date(2024, 0, 20), emission: 2.1, userId: 1 },
-    { id: 3, date: new Date(2024, 0, 25), emission: 1.8, userId: 1 },
-    { id: 4, date: new Date(2024, 1, 1), emission: 3.2, userId: 2 },
-    { id: 5, date: new Date(2024, 1, 5), emission: 2.9, userId: 2 },
-  ]);
+  const { user, session } = useAuth();
+  const [carbonRecords, setCarbonRecords] = useState<CarbonRecord[]>([]);
+  const [posts, setPosts] = useState<Post[]>([]);
+  const [loading, setLoading] = useState(false);
 
-  const [posts, setPosts] = useState<Post[]>([
-    {
-      id: 1,
-      title: "Tips for Reducing Your Carbon Footprint",
-      content: "Here are some practical ways to reduce your daily carbon emissions...",
-      author: "EcoWarrior",
-      authorId: 1,
-      likes: 12,
-      comments: [
-        { id: 1, content: "Great tips! I've started cycling to work.", author: "GreenLiving", authorId: 2, createdAt: new Date() }
-      ],
-      createdAt: new Date(2024, 0, 10)
-    },
-    {
-      id: 2,
-      title: "Renewable Energy at Home",
-      content: "Sharing my experience with solar panels and their impact on my carbon footprint...",
-      author: "SolarPower",
-      authorId: 3,
-      likes: 8,
-      comments: [],
-      createdAt: new Date(2024, 0, 12)
+  useEffect(() => {
+    if (session) {
+      fetchCarbonRecords();
+      fetchPosts();
     }
-  ]);
+  }, [session]);
 
-  const addCarbonRecord = (emission: number, userId: number) => {
-    const newRecord: CarbonRecord = {
-      id: Date.now(),
-      date: new Date(),
-      emission,
-      userId,
-    };
-    setCarbonRecords(prev => [...prev, newRecord]);
-  };
+  const fetchCarbonRecords = async () => {
+    if (!user) return;
 
-  const addPost = (title: string, content: string, authorId: number, author: string) => {
-    const newPost: Post = {
-      id: Date.now(),
-      title,
-      content,
-      author,
-      authorId,
-      likes: 0,
-      comments: [],
-      createdAt: new Date(),
-    };
-    setPosts(prev => [newPost, ...prev]);
-  };
+    try {
+      const { data, error } = await supabase
+        .from('carbon_records')
+        .select('*')
+        .eq('user_id', user.id)
+        .order('created_at', { ascending: false });
 
-  const addComment = (postId: number, content: string, authorId: number, author: string) => {
-    setPosts(prev => prev.map(post => 
-      post.id === postId 
-        ? { 
-            ...post, 
-            comments: [...post.comments, { 
-              id: Date.now(), 
-              content, 
-              author, 
-              authorId, 
-              createdAt: new Date() 
-            }] 
-          }
-        : post
-    ));
-  };
-
-  const toggleLike = (postId: number) => {
-    setPosts(prev => prev.map(post => 
-      post.id === postId 
-        ? { ...post, likes: post.likes + 1 }
-        : post
-    ));
-  };
-
-  const getUserRecords = (userId: number) => {
-    return carbonRecords.filter(record => record.userId === userId);
-  };
-
-  const getLeaderboard = () => {
-    const userEmissions = carbonRecords.reduce((acc, record) => {
-      if (!acc[record.userId]) {
-        acc[record.userId] = { total: 0, count: 0 };
+      if (error) {
+        console.error('Error fetching carbon records:', error);
+      } else {
+        setCarbonRecords(data || []);
       }
-      acc[record.userId].total += record.emission;
-      acc[record.userId].count += 1;
-      return acc;
-    }, {} as Record<number, { total: number; count: number }>);
+    } catch (error) {
+      console.error('Error fetching carbon records:', error);
+    }
+  };
 
-    const mockUsers = [
-      { id: 1, username: 'EcoWarrior', city: 'San Francisco' },
-      { id: 2, username: 'GreenLiving', city: 'Portland' },
-      { id: 3, username: 'SolarPower', city: 'Austin' },
-    ];
+  const fetchPosts = async () => {
+    try {
+      const { data: postsData, error: postsError } = await supabase
+        .from('community_posts')
+        .select(`
+          *,
+          profiles (username, city)
+        `)
+        .order('created_at', { ascending: false });
 
-    return Object.entries(userEmissions)
-      .map(([userId, data]) => {
-        const user = mockUsers.find(u => u.id === parseInt(userId));
-        return {
-          username: user?.username || 'Unknown',
-          city: user?.city || 'Unknown',
+      if (postsError) {
+        console.error('Error fetching posts:', postsError);
+        return;
+      }
+
+      // Fetch comments and likes for each post
+      const postsWithDetails = await Promise.all(
+        (postsData || []).map(async (post) => {
+          // Fetch comments
+          const { data: commentsData } = await supabase
+            .from('post_comments')
+            .select(`
+              *,
+              profiles (username)
+            `)
+            .eq('post_id', post.id)
+            .order('created_at', { ascending: true });
+
+          // Fetch likes count
+          const { count: likesCount } = await supabase
+            .from('post_likes')
+            .select('*', { count: 'exact' })
+            .eq('post_id', post.id);
+
+          return {
+            id: post.id,
+            title: post.title,
+            content: post.content,
+            author: post.profiles?.username || 'Anonymous',
+            authorId: post.user_id,
+            likes: likesCount || 0,
+            comments: (commentsData || []).map((comment: any) => ({
+              id: comment.id,
+              content: comment.content,
+              author: comment.profiles?.username || 'Anonymous',
+              authorId: comment.user_id,
+              createdAt: new Date(comment.created_at),
+            })),
+            createdAt: new Date(post.created_at),
+          };
+        })
+      );
+
+      setPosts(postsWithDetails);
+    } catch (error) {
+      console.error('Error fetching posts:', error);
+    }
+  };
+
+  const addCarbonRecord = async (emission: number, calculationData: any) => {
+    if (!user) return;
+
+    try {
+      const { data, error } = await supabase
+        .from('carbon_records')
+        .insert([
+          {
+            user_id: user.id,
+            emission,
+            calculation_data: calculationData,
+          },
+        ])
+        .select()
+        .single();
+
+      if (error) {
+        console.error('Error adding carbon record:', error);
+      } else {
+        setCarbonRecords(prev => [data, ...prev]);
+      }
+    } catch (error) {
+      console.error('Error adding carbon record:', error);
+    }
+  };
+
+  const addPost = async (title: string, content: string) => {
+    if (!user) return;
+
+    try {
+      const { data, error } = await supabase
+        .from('community_posts')
+        .insert([
+          {
+            user_id: user.id,
+            title,
+            content,
+            likes_count: 0,
+          },
+        ])
+        .select()
+        .single();
+
+      if (error) {
+        console.error('Error adding post:', error);
+      } else {
+        await fetchPosts(); // Refresh posts to get the new one with profile data
+      }
+    } catch (error) {
+      console.error('Error adding post:', error);
+    }
+  };
+
+  const addComment = async (postId: string, content: string) => {
+    if (!user) return;
+
+    try {
+      const { error } = await supabase
+        .from('post_comments')
+        .insert([
+          {
+            post_id: postId,
+            user_id: user.id,
+            content,
+          },
+        ]);
+
+      if (error) {
+        console.error('Error adding comment:', error);
+      } else {
+        await fetchPosts(); // Refresh posts to get updated comments
+      }
+    } catch (error) {
+      console.error('Error adding comment:', error);
+    }
+  };
+
+  const toggleLike = async (postId: string) => {
+    if (!user) return;
+
+    try {
+      // Check if user already liked this post
+      const { data: existingLike } = await supabase
+        .from('post_likes')
+        .select('id')
+        .eq('post_id', postId)
+        .eq('user_id', user.id)
+        .single();
+
+      if (existingLike) {
+        // Unlike
+        await supabase
+          .from('post_likes')
+          .delete()
+          .eq('id', existingLike.id);
+      } else {
+        // Like
+        await supabase
+          .from('post_likes')
+          .insert([
+            {
+              post_id: postId,
+              user_id: user.id,
+            },
+          ]);
+      }
+
+      await fetchPosts(); // Refresh posts to get updated like counts
+    } catch (error) {
+      console.error('Error toggling like:', error);
+    }
+  };
+
+  const getUserRecords = (userId: string) => {
+    return carbonRecords.filter(record => record.user_id === userId);
+  };
+
+  const getLeaderboard = async () => {
+    try {
+      const { data, error } = await supabase
+        .from('carbon_records')
+        .select(`
+          user_id,
+          emission,
+          profiles (username, city)
+        `);
+
+      if (error) {
+        console.error('Error fetching leaderboard data:', error);
+        return [];
+      }
+
+      // Calculate average emissions per user
+      const userEmissions: Record<string, { total: number; count: number; username: string; city: string }> = {};
+
+      data?.forEach((record: any) => {
+        const userId = record.user_id;
+        if (!userEmissions[userId]) {
+          userEmissions[userId] = {
+            total: 0,
+            count: 0,
+            username: record.profiles?.username || 'Anonymous',
+            city: record.profiles?.city || 'Unknown',
+          };
+        }
+        userEmissions[userId].total += record.emission;
+        userEmissions[userId].count += 1;
+      });
+
+      // Convert to leaderboard format and sort
+      const leaderboard = Object.entries(userEmissions)
+        .map(([userId, data]) => ({
+          username: data.username,
+          city: data.city,
           avgEmission: data.total / data.count,
           rank: 0,
-        };
-      })
-      .sort((a, b) => a.avgEmission - b.avgEmission)
-      .map((item, index) => ({ ...item, rank: index + 1 }));
+        }))
+        .sort((a, b) => a.avgEmission - b.avgEmission)
+        .map((item, index) => ({ ...item, rank: index + 1 }));
+
+      return leaderboard;
+    } catch (error) {
+      console.error('Error calculating leaderboard:', error);
+      return [];
+    }
+  };
+
+  const refreshPosts = async () => {
+    await fetchPosts();
   };
 
   const value = {
@@ -173,6 +316,8 @@ export const DataProvider: React.FC<{ children: React.ReactNode }> = ({ children
     toggleLike,
     getUserRecords,
     getLeaderboard,
+    loading,
+    refreshPosts,
   };
 
   return <DataContext.Provider value={value}>{children}</DataContext.Provider>;

@@ -1,18 +1,7 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
 import { useAuth } from './AuthContext';
 import { useData } from './DataContext';
-
-interface AIInsight {
-  id: string;
-  type: 'tip' | 'trend' | 'goal' | 'achievement';
-  title: string;
-  content: string;
-  priority: 'low' | 'medium' | 'high';
-  category: 'transport' | 'energy' | 'diet' | 'waste' | 'general';
-  carbonImpact?: number;
-  createdAt: Date;
-  read: boolean;
-}
+import { supabase, type AIInsight } from '../lib/supabase';
 
 interface PersonalizedGoal {
   id: string;
@@ -29,9 +18,9 @@ interface AIInsightsContextType {
   insights: AIInsight[];
   goals: PersonalizedGoal[];
   trendAnalysis: string;
-  generateInsights: () => void;
-  markInsightAsRead: (id: string) => void;
-  acceptGoal: (goalId: string) => void;
+  generateInsights: () => Promise<void>;
+  markInsightAsRead: (id: string) => Promise<void>;
+  acceptGoal: (goalId: string) => Promise<void>;
 }
 
 const AIInsightsContext = createContext<AIInsightsContextType | undefined>(undefined);
@@ -51,6 +40,33 @@ export const AIInsightsProvider: React.FC<{ children: React.ReactNode }> = ({ ch
   const [insights, setInsights] = useState<AIInsight[]>([]);
   const [goals, setGoals] = useState<PersonalizedGoal[]>([]);
   const [trendAnalysis, setTrendAnalysis] = useState('');
+
+  useEffect(() => {
+    if (user) {
+      fetchInsights();
+      generateInsights();
+    }
+  }, [user]);
+
+  const fetchInsights = async () => {
+    if (!user) return;
+
+    try {
+      const { data, error } = await supabase
+        .from('ai_insights')
+        .select('*')
+        .eq('user_id', user.id)
+        .order('created_at', { ascending: false });
+
+      if (error) {
+        console.error('Error fetching insights:', error);
+      } else {
+        setInsights(data || []);
+      }
+    } catch (error) {
+      console.error('Error fetching insights:', error);
+    }
+  };
 
   const generateTrendAnalysis = (records: any[]) => {
     if (records.length < 2) {
@@ -74,73 +90,71 @@ export const AIInsightsProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     }
   };
 
-  const generatePersonalizedTips = (records: any[]) => {
-    const tips: AIInsight[] = [];
-    
-    if (records.length === 0) return tips;
+  const generatePersonalizedTips = async (records: any[]) => {
+    if (!user || records.length === 0) return;
 
     const avgEmission = records.reduce((sum, r) => sum + r.emission, 0) / records.length;
     
+    const newInsights: Omit<AIInsight, 'id' | 'created_at'>[] = [];
+
     // High emissions tip
     if (avgEmission > 3.0) {
-      tips.push({
-        id: 'high-emissions-tip',
+      newInsights.push({
+        user_id: user.id,
         type: 'tip',
         title: 'Reduce Transportation Emissions',
         content: 'Your carbon footprint is above average. Consider using public transport, cycling, or walking for short trips. Even replacing one car trip per day can reduce your emissions by 20-30%.',
         priority: 'high',
         category: 'transport',
-        carbonImpact: 1.2,
-        createdAt: new Date(),
+        carbon_impact: 1.2,
         read: false
       });
     }
 
     // Moderate emissions tip
     if (avgEmission > 2.0 && avgEmission <= 3.0) {
-      tips.push({
-        id: 'moderate-emissions-tip',
+      newInsights.push({
+        user_id: user.id,
         type: 'tip',
         title: 'Optimize Energy Usage',
         content: 'You\'re doing well! To further reduce your footprint, try switching to LED bulbs, unplugging devices when not in use, and adjusting your thermostat by 2°C.',
         priority: 'medium',
         category: 'energy',
-        carbonImpact: 0.8,
-        createdAt: new Date(),
+        carbon_impact: 0.8,
         read: false
       });
     }
 
     // Low emissions encouragement
     if (avgEmission <= 2.0) {
-      tips.push({
-        id: 'low-emissions-tip',
+      newInsights.push({
+        user_id: user.id,
         type: 'achievement',
         title: 'Eco Champion Status!',
         content: 'Congratulations! Your carbon footprint is well below average. You\'re making a real difference. Consider sharing your eco-friendly habits with the community to inspire others.',
         priority: 'high',
         category: 'general',
-        createdAt: new Date(),
+        carbon_impact: null,
         read: false
       });
     }
 
-    // Weekly pattern analysis
-    const dayOfWeek = new Date().getDay();
-    if (dayOfWeek === 1) { // Monday
-      tips.push({
-        id: 'monday-motivation',
-        type: 'tip',
-        title: 'Start Your Week Green',
-        content: 'Monday is perfect for setting eco-friendly intentions! Plan your meals to reduce food waste, choose sustainable transport options, and set a weekly carbon reduction goal.',
-        priority: 'medium',
-        category: 'general',
-        createdAt: new Date(),
-        read: false
-      });
-    }
+    // Save insights to database
+    if (newInsights.length > 0) {
+      try {
+        const { error } = await supabase
+          .from('ai_insights')
+          .insert(newInsights);
 
-    return tips;
+        if (error) {
+          console.error('Error saving insights:', error);
+        } else {
+          await fetchInsights(); // Refresh insights
+        }
+      } catch (error) {
+        console.error('Error saving insights:', error);
+      }
+    }
   };
 
   const generatePersonalizedGoals = (records: any[]) => {
@@ -193,7 +207,7 @@ export const AIInsightsProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     return goals;
   };
 
-  const generateInsights = () => {
+  const generateInsights = async () => {
     if (!user) return;
 
     const userRecords = getUserRecords(user.id);
@@ -203,46 +217,61 @@ export const AIInsightsProvider: React.FC<{ children: React.ReactNode }> = ({ ch
     setTrendAnalysis(analysis);
 
     // Generate personalized tips
-    const newTips = generatePersonalizedTips(userRecords);
-    setInsights(prev => {
-      // Remove old tips and add new ones
-      const filtered = prev.filter(insight => insight.type !== 'tip' && insight.type !== 'achievement');
-      return [...filtered, ...newTips];
-    });
+    await generatePersonalizedTips(userRecords);
 
     // Generate personalized goals
     const newGoals = generatePersonalizedGoals(userRecords);
     setGoals(newGoals);
   };
 
-  useEffect(() => {
-    if (user) {
-      generateInsights();
-    }
-  }, [user]);
+  const markInsightAsRead = async (id: string) => {
+    try {
+      const { error } = await supabase
+        .from('ai_insights')
+        .update({ read: true })
+        .eq('id', id);
 
-  const markInsightAsRead = (id: string) => {
-    setInsights(prev => 
-      prev.map(insight => 
-        insight.id === id ? { ...insight, read: true } : insight
-      )
-    );
+      if (error) {
+        console.error('Error marking insight as read:', error);
+      } else {
+        setInsights(prev => 
+          prev.map(insight => 
+            insight.id === id ? { ...insight, read: true } : insight
+          )
+        );
+      }
+    } catch (error) {
+      console.error('Error marking insight as read:', error);
+    }
   };
 
-  const acceptGoal = (goalId: string) => {
+  const acceptGoal = async (goalId: string) => {
+    if (!user) return;
+
     const goal = goals.find(g => g.id === goalId);
     if (goal) {
-      setInsights(prev => [...prev, {
-        id: `goal-accepted-${goalId}`,
-        type: 'goal',
-        title: 'New Goal Accepted',
-        content: `You've committed to: ${goal.title}. Track your progress and aim to save ${goal.estimatedSaving} kg CO₂!`,
-        priority: 'high',
-        category: goal.category as any,
-        carbonImpact: goal.estimatedSaving,
-        createdAt: new Date(),
-        read: false
-      }]);
+      try {
+        const { error } = await supabase
+          .from('ai_insights')
+          .insert([{
+            user_id: user.id,
+            type: 'goal',
+            title: 'New Goal Accepted',
+            content: `You've committed to: ${goal.title}. Track your progress and aim to save ${goal.estimatedSaving} kg CO₂!`,
+            priority: 'high',
+            category: goal.category,
+            carbon_impact: goal.estimatedSaving,
+            read: false
+          }]);
+
+        if (error) {
+          console.error('Error accepting goal:', error);
+        } else {
+          await fetchInsights(); // Refresh insights
+        }
+      } catch (error) {
+        console.error('Error accepting goal:', error);
+      }
     }
   };
 

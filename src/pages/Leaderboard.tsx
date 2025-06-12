@@ -1,10 +1,27 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import { useData } from '../contexts/DataContext';
 import { Trophy, Medal, Award, TrendingDown, MapPin } from 'lucide-react';
 
 const Leaderboard: React.FC = () => {
   const { getLeaderboard } = useData();
-  const leaderboard = getLeaderboard();
+  const [leaderboard, setLeaderboard] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    fetchLeaderboard();
+  }, []);
+
+  const fetchLeaderboard = async () => {
+    setLoading(true);
+    try {
+      const data = await getLeaderboard();
+      setLeaderboard(data);
+    } catch (error) {
+      console.error('Error fetching leaderboard:', error);
+    } finally {
+      setLoading(false);
+    }
+  };
 
   const getRankIcon = (rank: number) => {
     switch (rank) {
@@ -39,6 +56,19 @@ const Leaderboard: React.FC = () => {
     return { level: 'Needs Improvement', color: 'text-red-600 bg-red-50' };
   };
 
+  if (loading) {
+    return (
+      <div className="min-h-screen py-12 px-4 sm:px-6 lg:px-8">
+        <div className="max-w-4xl mx-auto">
+          <div className="text-center">
+            <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary-600 mx-auto"></div>
+            <p className="mt-4 text-gray-600">Loading leaderboard...</p>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="min-h-screen py-12 px-4 sm:px-6 lg:px-8">
       <div className="max-w-4xl mx-auto">
@@ -58,8 +88,8 @@ const Leaderboard: React.FC = () => {
             <div className="flex items-center justify-between">
               <div>
                 <p className="text-green-100 text-sm">Best Performer</p>
-                <p className="text-2xl font-bold">{leaderboard[0]?.avgEmission.toFixed(2)} kg CO₂</p>
-                <p className="text-green-100 text-sm">{leaderboard[0]?.username}</p>
+                <p className="text-2xl font-bold">{leaderboard[0]?.avgEmission?.toFixed(2) || '0.00'} kg CO₂</p>
+                <p className="text-green-100 text-sm">{leaderboard[0]?.username || 'No data'}</p>
               </div>
               <Trophy className="h-12 w-12 text-green-200" />
             </div>
@@ -178,7 +208,7 @@ const Leaderboard: React.FC = () => {
               </div>
               <div>
                 <p className="font-semibold text-green-900">Eco Champion</p>
-                <p className="text-sm text-green-700">&lt; 1.5 kg CO₂/day</p>
+                <p className="text-sm text-green-700">< 1.5 kg CO₂/day</p>
               </div>
             </div>
             
@@ -208,7 +238,7 @@ const Leaderboard: React.FC = () => {
               </div>
               <div>
                 <p className="font-semibold text-red-900">Getting Started</p>
-                <p className="text-sm text-red-700">&gt; 2.5 kg CO₂/day</p>
+                <p className="text-sm text-red-700">> 2.5 kg CO₂/day</p>
               </div>
             </div>
           </div>
